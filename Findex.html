@@ -267,12 +267,12 @@
   <div id="calib">
     <h3>Ajuste fino del calce</h3>
     <div class="slider-row">
-      <label><span>Altura</span><span id="v-height">0.34</span></label>
-      <input type="range" id="s-height" min="0.10" max="0.60" step="0.01" value="0.34">
+      <label><span>Altura (cm)</span><span id="v-height">9.0</span></label>
+      <input type="range" id="s-height" min="0" max="18" step="0.2" value="9.0">
     </div>
     <div class="slider-row">
-      <label><span>Tamaño</span><span id="v-scale">1.00</span></label>
-      <input type="range" id="s-scale" min="0.6" max="1.6" step="0.02" value="1.0">
+      <label><span>Tamaño (cm)</span><span id="v-scale">40</span></label>
+      <input type="range" id="s-scale" min="10" max="90" step="1" value="40">
     </div>
     <div class="slider-row">
       <label><span>Bamboleo</span><span id="v-wobble">1.00</span></label>
@@ -338,8 +338,10 @@ const CONFIG = {
   wasmBase: "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm",
   maxFaces: 4,
   verticalFovDeg: 63,          // FOV aproximado usado por MediaPipe cuando no hay calibración de cámara real
-  hatOffset: { x: 0, y: 0.34, z: -0.02 }, // desplazamiento del sombrero respecto al origen de la cara (se ajusta con el slider)
-  hatScale: 1.0,
+  // MediaPipe devuelve la pose de la cara en un "espacio métrico" real: 1 unidad = 1 centímetro.
+  // El offset y la escala del sombrero deben ir en esas mismas unidades (cm), no en unidades arbitrarias.
+  hatOffset: { x: 0, y: 9.0, z: -1.2 }, // desplazamiento del sombrero respecto al origen de la cara, en cm (se ajusta con el slider)
+  hatScale: 40,                 // factor que lleva la geometría "de juguete" (~0.2 unidades) a un tamaño real de ~8-10 cm
   wobbleStrength: 1.0,
   smoothing: 0.35,              // 0..1, cuanto más alto más rígido/menos lag
   lightSampleIntervalMs: 160,
@@ -999,14 +1001,14 @@ function wireUI(){
   bindSlider("s-height","v-height", v=>{
     CONFIG.hatOffset.y = v;
     for (const slot of state.faceSlots) slot.hatSlot.position.y = v;
-  });
+  }, 1);
   bindSlider("s-scale","v-scale", v=>{
     CONFIG.hatScale = v;
     for (const slot of state.faceSlots) slot.hatSlot.scale.setScalar(v);
-  });
+  }, 0);
   bindSlider("s-wobble","v-wobble", v=>{
     CONFIG.wobbleStrength = v;
-  });
+  }, 2);
 
   $("#shot-btn").addEventListener("click", takeShot);
 
@@ -1015,11 +1017,11 @@ function wireUI(){
   });
 }
 
-function bindSlider(inputId, labelId, onChange){
+function bindSlider(inputId, labelId, onChange, decimals=2){
   const input = $("#"+inputId), label = $("#"+labelId);
   input.addEventListener("input", ()=>{
     const v = parseFloat(input.value);
-    label.textContent = v.toFixed(2);
+    label.textContent = v.toFixed(decimals);
     onChange(v);
   });
 }
