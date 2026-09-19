@@ -278,6 +278,10 @@
       <label><span>Bamboleo</span><span id="v-wobble">1.00</span></label>
       <input type="range" id="s-wobble" min="0" max="2" step="0.05" value="1.0">
     </div>
+    <div class="slider-row">
+      <label><span>Cabeza (oclusión)</span><span id="v-head">1.00</span></label>
+      <input type="range" id="s-head" min="0.6" max="1.6" step="0.02" value="1.0">
+    </div>
   </div>
   <div id="hat-rail">
     <div class="hat-chip active" data-hat="tophat">🎩<span class="chip-name">Copa</span></div>
@@ -345,6 +349,12 @@ const CONFIG = {
   wobbleStrength: 1.0,
   smoothing: 0.35,              // 0..1, cuanto más alto más rígido/menos lag
   lightSampleIntervalMs: 160,
+  // Oclusor de cabeza: un elipsoide invisible (solo escribe profundidad, no color)
+  // centrado aprox. en el volumen real de la cabeza. Cualquier parte del sombrero
+  // que quede "detrás" de este volumen, vista desde la cámara, no se dibuja —
+  // así la cara y la cabeza real siempre se ven, aunque el sombrero se mueva encima.
+  head: { rx: 9.2, ry: 11.5, rz: 10.0, offsetX: 0, offsetY: 2.0, offsetZ: -2.5 }, // radios y offset en cm
+  headScale: 1.0,                // multiplicador global, ajustable con el slider "Cabeza"
 };
 
 /* ============================================================
@@ -422,6 +432,74 @@ function makeCanvasTexture(draw, size=512){
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   return tex;
+}
+
+/* Genera un mapa de normales a partir de un "mapa de alturas" pintado en canvas.
+   Esto es lo que hace que una tela se vea de tela: la luz se rompe en el
+   microrrelieve del tejido en vez de rebotar lisa como en un plástico. */
+function heightToNormalMap(drawHeight, size=256, strength=2.0){
+  const hc = document.createElement("canvas");
+  hc.width = hc.height = size;
+  const hctx = hc.getContext("2d");
+  drawHeight(hctx, size);
+  const src = hctx.getImageData(0,0,size,size).data;
+  const h = (x,y)=>{
+    x = (x+size)%size; y = (y+size)%size;
+    const i = (y*size+x)*4;
+    return src[i]/255;
+  };
+  const out = new Uint8ClampedArray(size*size*4);
+  for(let y=0;y<size;y++){
+    for(let x=0;x<size;x++){
+      const dx = (h(x-1,y) - h(x+1,y)) * strength;
+      const dy = (h(x,y-1) - h(x,y+1)) * strength;
+      let nx=dx, ny=dy, nz=1.0;
+      const len = Math.sqrt(nx*nx+ny*ny+nz*nz) || 1;
+      nx/=len; ny/=len; nz/=len;
+      const i = (y*size+x)*4;
+      out[i]   = (nx*0.5+0.5)*255;
+      out[i+1] = (ny*0.5+0.5)*255;
+      out[i+2] = (nz*0.5+0.5)*255;
+      out[i+3] = 255;
+    }
+  }
+  const nc = document.createElement("canvas");
+  nc.width = nc.height = size;
+  nc.getContext("2d").putImageData(new ImageData(out, size, size), 0, 0);
+  const tex = new THREE.CanvasTexture(nc);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+function drawWeaveHeight(ctx, s){
+  ctx.fillStyle = "#7d7d7d"; ctx.fillRect(0,0,s,s);
+  const n = 28, step = s/n;
+  for(let i=0;i<n;i++){
+    const y = i*step;
+    ctx.fillStyle = (i%2===0) ? "#9a9a9a" : "#606060";
+    ctx.fillRect(0,y,s,step*0.82);
+  }
+  for(let i=0;i<n;i++){
+    const x = i*step;
+    ctx.fillStyle = (i%2===0) ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.10)";
+    ctx.fillRect(x,0,step*0.5,s);
+  }
+  for(let i=0;i<s*s*0.03;i++){
+    const x = Math.random()*s, y = Math.random()*s;
+    const v = 90+Math.random()*90;
+    ctx.fillStyle = `rgba(${v},${v},${v},0.5)`;
+    ctx.fillRect(x,y,1,1);
+  }
+}
+
+// mapa de normales de tejido compartido entre sombreros (se genera una sola vez)
+let _fabricNormalCache = null;
+function fabricNormalMap(){
+  if (!_fabricNormalCache){
+    _fabricNormalCache = heightToNormalMap(drawWeaveHeight, 256, 1.6);
+    _fabricNormalCache.repeat.set(10,10);
+  }
+  return _fabricNormalCache;
 }
 
 function silkTexture(){
@@ -541,8 +619,10 @@ function makeTopHat(){
   const tex = silkTexture();
   tex.repeat.set(3,1);
   const mat = new THREE.MeshPhysicalMaterial({
-    map: tex, color: 0x141414, roughness:0.28, metalness:0.05,
-    clearcoat:0.6, clearcoatRoughness:0.35, envMapIntensity:1.1,
+    map: tex, color: 0x141414, roughness:0.62, metalness:0.0,
+    normalMap: fabricNormalMap(), normalScale: new THREE.Vector2(0.35,0.35),
+    sheen:0.35, sheenColor:0x555555, sheenRoughness:0.7,
+    envMapIntensity:0.55,
   });
   const body = new THREE.Mesh(geo, mat);
   g.add(body);
@@ -577,8 +657,9 @@ function makeWizardHat(){
   geo.computeVertexNormals();
   const tex = velvetStarsTexture();
   const mat = new THREE.MeshPhysicalMaterial({
-    map: tex, color: 0xffffff, roughness:0.55, metalness:0.05,
-    clearcoat:0.15, envMapIntensity:0.9, sheen:0.6, sheenColor:0x8a5cff,
+    map: tex, color: 0xffffff, roughness:0.72, metalness:0.0,
+    normalMap: fabricNormalMap(), normalScale: new THREE.Vector2(0.3,0.3),
+    envMapIntensity:0.4, sheen:0.7, sheenColor:0x8a5cff, sheenRoughness:0.55,
   });
   const cone = new THREE.Mesh(geo, mat);
   cone.rotation.z = 0.10; // ligera inclinación, típico gorro de mago
@@ -616,7 +697,9 @@ function makeCowboyHat(){
   const tex = feltTexture();
   tex.repeat.set(2,1);
   const mat = new THREE.MeshPhysicalMaterial({
-    map: tex, color: 0xffffff, roughness:0.85, metalness:0.0, envMapIntensity:0.7,
+    map: tex, color: 0xffffff, roughness:0.88, metalness:0.0,
+    normalMap: fabricNormalMap(), normalScale: new THREE.Vector2(0.4,0.4),
+    envMapIntensity:0.35,
   });
   const body = new THREE.Mesh(geo, mat);
   g.add(body);
@@ -657,8 +740,18 @@ function createFaceSlot(){
   anchor.matrixAutoUpdate = false;
   scene.add(anchor);
 
+  // oclusor invisible con la forma aproximada de la cabeza real: escribe en el
+  // buffer de profundidad pero no pinta color, así la cabeza real "tapa" al
+  // sombrero cuando corresponde en vez de que el sombrero tape la cara.
+  const occGeo = new THREE.SphereGeometry(1, 32, 24);
+  const occMat = new THREE.MeshBasicMaterial({ colorWrite: false });
+  const occluder = new THREE.Mesh(occGeo, occMat);
+  occluder.renderOrder = -1;
+  applyHeadOcclusionTransform(occluder);
+  wobble.add(occluder);
+
   return {
-    anchor, wobble, hatSlot,
+    anchor, wobble, hatSlot, occluder,
     currentHatMesh: null,
     currentHatType: null,
     targetMatrix: new THREE.Matrix4(),
@@ -671,6 +764,12 @@ function createFaceSlot(){
     wornSince: performance.now(),
     scoredSeconds: 0,
   };
+}
+
+function applyHeadOcclusionTransform(occluder){
+  const h = CONFIG.head, m = CONFIG.headScale;
+  occluder.scale.set(h.rx*m, h.ry*m, h.rz*m);
+  occluder.position.set(h.offsetX, h.offsetY, h.offsetZ);
 }
 
 function ensureHat(slot, type){
@@ -1008,6 +1107,10 @@ function wireUI(){
   }, 0);
   bindSlider("s-wobble","v-wobble", v=>{
     CONFIG.wobbleStrength = v;
+  }, 2);
+  bindSlider("s-head","v-head", v=>{
+    CONFIG.headScale = v;
+    for (const slot of state.faceSlots) applyHeadOcclusionTransform(slot.occluder);
   }, 2);
 
   $("#shot-btn").addEventListener("click", takeShot);
